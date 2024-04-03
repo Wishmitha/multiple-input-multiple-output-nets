@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 
+from superposition import Superposition
+from superposition import noOrthoRegularizationConv2d
+
 
 @torch.no_grad()
 def init_weights(init_type='xavier'):
@@ -103,10 +106,11 @@ class DenoisingBlock(nn.Module):
         return out_3 + x
 
 
-class RDUNet(nn.Module):
+class RDUNet(nn.Module, Superposition):
     r"""
     Residual-Dense U-net for image denoising.
     """
+
     def __init__(self, **kwargs):
         super().__init__()
 
@@ -115,6 +119,22 @@ class RDUNet(nn.Module):
         filters_1 = 2 * filters_0
         filters_2 = 4 * filters_0
         filters_3 = 8 * filters_0
+
+        norm_layer = nn.BatchNorm2d
+
+        # Preprocess
+        self.num_img_sup = 4
+
+        self.conv1 = noOrthoRegularizationConv2d(1, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = norm_layer(self.inplanes)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.Identity()
+
+        self.bind = self.pointwiseConvThroughChannels
+
+        self.conv2 = noOrthoRegularizationConv2d(64, 1, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = norm_layer(self.inplanes)
+        self.relu = nn.ReLU(inplace=True)
 
         # Encoder:
         # Level 0:
@@ -156,32 +176,53 @@ class RDUNet(nn.Module):
         self.output_block = OutputBlock(filters_0, channels)
 
     def forward(self, inputs):
-        out_0 = self.input_block(inputs)    # Level 0
+        x = self.conv1(inputs)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        eff_batch_size = x.shape[0] // self.num_img_sup
+
+        x = x.reshape(eff_batch_size, self.num_img_sup, x.shape[1], x.shape[2], x.shape[3])
+
+        x = self.bind(x)
+        x = torch.sum(x, 1)
+
+        out_0 = self.input_block(x)  # Level 0
         out_0 = self.block_0_0(out_0)
         out_0 = self.block_0_1(out_0)
 
-        out_1 = self.down_0(out_0)          # Level 1
+        out_1 = self.down_0(out_0)  # Level 1
         out_1 = self.block_1_0(out_1)
         out_1 = self.block_1_1(out_1)
 
-        out_2 = self.down_1(out_1)          # Level 2
+        out_2 = self.down_1(out_1)  # Level 2
         out_2 = self.block_2_0(out_2)
         out_2 = self.block_2_1(out_2)
 
-        out_3 = self.down_2(out_2)          # Level 3 (Bottleneck)
+        out_3 = self.down_2(out_2)  # Level 3 (Bottleneck)
         out_3 = self.block_3_0(out_3)
         out_3 = self.block_3_1(out_3)
 
-        out_4 = self.up_2([out_3, out_2])   # Level 2
+        out_4 = self.up_2([out_3, out_2])  # Level 2
         out_4 = self.block_2_2(out_4)
         out_4 = self.block_2_3(out_4)
 
-        out_5 = self.up_1([out_4, out_1])   # Level 1
+        out_5 = self.up_1([out_4, out_1])  # Level 1
         out_5 = self.block_1_2(out_5)
         out_5 = self.block_1_3(out_5)
 
-        out_6 = self.up_0([out_5, out_0])   # Level 0
+        out_6 = self.up_0([out_5, out_0])  # Level 0
         out_6 = self.block_0_2(out_6)
         out_6 = self.block_0_3(out_6)
 
-        return self.output_block(out_6) + inputs
+        x = self.unbind(out_6)
+
+        x = x.reshape(eff_batch_size * self.num_img_sup, x.shape[1] // self.num_img_sup, x.shape[2], x.shape[3])
+
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        return x

@@ -74,6 +74,7 @@ class BasicBlock(nn.Module):
 
 class SuperWideResnet(nn.Module, Superposition):
     def __init__(self, num_img_sup_cap: int, binding_type: str, width: int, layers: List[int], initial_width: int = 1, num_classes: int = 1000, norm_layer: Optional[nn.Module] = None, block = BasicBlock, relu_parameter = None, skip_init: bool = False, trainable_keys = True, input_channels: int=3) -> None:
+        print("Layers", layers)
         r"""Initialises a Computation in Superposition enabled WideResNet
         Args:
             num_img_sup_cap: num_img_sup_cap(acity) indicates how many images can at most be processed concurrently. Each batch is divided into num_img_sup parts, which are processed concurrently, with leftovers discarded.
@@ -188,6 +189,9 @@ class SuperWideResnet(nn.Module, Superposition):
         return 0
 
     def forward(self, x: Tensor) -> Tensor:
+        print("Original",x.shape)
+        print("MIMONET Channels",self.num_img_sup)
+        print("MIMONET Channels?", self.num_img_sup_cap)
         r"""
         Args:
             x: tensor of size (N, C, H, W)
@@ -200,11 +204,15 @@ class SuperWideResnet(nn.Module, Superposition):
         eff_batch_size = x.shape[0] - (x.shape[0] % self.num_img_sup)
         x = x[:eff_batch_size, :, :, :] # now batch is divisible by self.num_img_sup
 
+        print("Channel Adjustment", x.shape)
+
         # Normal WideResNet implementation enabled for processing images in superposition
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
+
+        print("Conv 1", x.shape)
 
         # Bundling operation after binding images with keys
         assert x.shape[0] % self.num_img_sup == 0
@@ -213,26 +221,43 @@ class SuperWideResnet(nn.Module, Superposition):
         # repeat images to be processed together until all available superposition channels are used
         x = x.repeat(1, sup_ratio, 1, 1, 1) #(N/num_img_sup, num_img_sup_cap, C, H, W)
 
+        print("Superposition", x.shape)
+
         x = self.bind(x)
         x = torch.sum(x, 1) #(N/num_img_sup, C, H, W)
 
+        print("Bind", x.shape)
+
         # computation in superposition
         x = self.layer1(x)
+        print("Network Layer 1", x.shape)
         x = self.layer2(x)
+        print("Network Layer 1", x.shape)
         x = self.layer3(x)
+        print("Network Layer 1", x.shape)
         x = self.layer4(x)
+        print("Network Layer 1", x.shape)
 
         x = self.avgpool(x) #(N/num_img_sup, C, 1, 1)
+
+        print("Average Layer", x.shape)
 
         #(N/num_img_sup, C, H, W)
         x = self.unbind(x) #(N/num_img_sup, num_img_sup_cap * C, 1, 1)
 
+        print("Unbind", x.shape)
+
         x = x.reshape(eff_batch_size // self.num_img_sup, sup_ratio, self.num_img_sup, self.fc.in_features) #(N/num_img_sup, sup_ratio, num_img_sup , C)
-        x = x.mean(dim=1) #(N/num_img_sup, num_img_sup, C) 
+        print("Reshape", x.shape)
+
+        x = x.mean(dim=1) #(N/num_img_sup, num_img_sup, C)
+        print("Mean", x.shape)
                 
-        x = x.reshape(eff_batch_size, self.fc.in_features) #(N, C) 
+        x = x.reshape(eff_batch_size, self.fc.in_features) #(N, C)
+        print("FC Reshape", x.shape)
 
         # fully connected layer (linear)
         x = self.fc(x)
+        print("Output", x.shape)
 
         return x
