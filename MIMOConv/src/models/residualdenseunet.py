@@ -111,11 +111,11 @@ class RDUNet(nn.Module, Superposition):
     Residual-Dense U-net for image denoising.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, channels, base_filters, **kwargs):
         super().__init__()
 
-        channels = kwargs['channels']
-        filters_0 = kwargs['base filters']
+        channels = channels
+        filters_0 = base_filters
         filters_1 = 2 * filters_0
         filters_2 = 4 * filters_0
         filters_3 = 8 * filters_0
@@ -125,15 +125,19 @@ class RDUNet(nn.Module, Superposition):
         # Preprocess
         self.num_img_sup = 4
 
+        Superposition.__init__(self, num_img_sup_cap=4,
+                               binding_type="HRR",
+                               channels=4,
+                               fully_connected_features=64,
+                               trainable_keys=True)
+
         self.conv1 = noOrthoRegularizationConv2d(1, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = norm_layer(self.inplanes)
+        self.bn1 = norm_layer(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.Identity()
 
-        self.bind = self.pointwiseConvThroughChannels
-
         self.conv2 = noOrthoRegularizationConv2d(64, 1, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = norm_layer(self.inplanes)
+        self.bn2 = norm_layer(1)
         self.relu = nn.ReLU(inplace=True)
 
         # Encoder:
@@ -176,53 +180,82 @@ class RDUNet(nn.Module, Superposition):
         self.output_block = OutputBlock(filters_0, channels)
 
     def forward(self, inputs):
+
+        #print("Input",inputs.shape)
+
         x = self.conv1(inputs)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
 
+        #print("Conv 1",x.shape)
+
         eff_batch_size = x.shape[0] // self.num_img_sup
 
         x = x.reshape(eff_batch_size, self.num_img_sup, x.shape[1], x.shape[2], x.shape[3])
 
+        #print("Superposition Reshape", x.shape)
+
         x = self.bind(x)
         x = torch.sum(x, 1)
+
+        #print("Bind", x.shape)
 
         out_0 = self.input_block(x)  # Level 0
         out_0 = self.block_0_0(out_0)
         out_0 = self.block_0_1(out_0)
 
+        #print("Level 0", out_0.shape)
+
         out_1 = self.down_0(out_0)  # Level 1
         out_1 = self.block_1_0(out_1)
         out_1 = self.block_1_1(out_1)
+
+        #print("Level 1", out_1.shape)
 
         out_2 = self.down_1(out_1)  # Level 2
         out_2 = self.block_2_0(out_2)
         out_2 = self.block_2_1(out_2)
 
+        #print("Level 2", out_2.shape)
+
         out_3 = self.down_2(out_2)  # Level 3 (Bottleneck)
         out_3 = self.block_3_0(out_3)
         out_3 = self.block_3_1(out_3)
+
+        #print("Level 3", out_3.shape)
 
         out_4 = self.up_2([out_3, out_2])  # Level 2
         out_4 = self.block_2_2(out_4)
         out_4 = self.block_2_3(out_4)
 
+        #print("Level 2", out_4.shape)
+
         out_5 = self.up_1([out_4, out_1])  # Level 1
         out_5 = self.block_1_2(out_5)
         out_5 = self.block_1_3(out_5)
+
+        #print("Level 1", out_5.shape)
 
         out_6 = self.up_0([out_5, out_0])  # Level 0
         out_6 = self.block_0_2(out_6)
         out_6 = self.block_0_3(out_6)
 
+        #print("Level 0", out_6.shape)
+
         x = self.unbind(out_6)
 
+        #print("Unbind", x.shape)
+
         x = x.reshape(eff_batch_size * self.num_img_sup, x.shape[1] // self.num_img_sup, x.shape[2], x.shape[3])
+
+        #print("Reshape", x.shape)
 
         x = self.conv2(x)
         x = self.bn2(x)
         x = self.relu(x)
         x = self.maxpool(x)
+
+        #print("Out", x.shape)
 
         return x
